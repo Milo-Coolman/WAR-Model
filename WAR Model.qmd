@@ -1,0 +1,185 @@
+---
+title: "Predicting WAR in Baseball using KNN"
+author: "Milo Coolman"
+format:
+  html:
+    embed-resources: true
+---
+
+# Introduction
+
+I am using the 'baseballr' package to scrape baseball statistics. In particular, I am looking at batting statistics from the 2021, 2022, 2023, and 2024 seasons, focusing on players with over 100 Plate Appearances. This data is scraped from the website fangraphs.com which is a website that contains the some of the most comprehensive baseball statistics that exist. The dataset that I have created has a total of 1848 players across 4 seasons. It contains stats such as Games played, At bats, Hits, Singles, Doubles, HRs, AVG, OPS, SLG, OPS, and many more.
+
+The goal of this project is to use a knn model to predict WAR (Wins Above Replacement) as accurately as possible. WAR is a stat, that put as generally as possible, determines how many extra wins a team would get by playing this player as opposed to the average replacement. The highest single season WAR since 1980 was by Dwight Gooden of the New York Mets in 1985. Dwight had a WAR of 13.3, which means that the Mets won an extra 13.3 games by having Dwight Gooden than they would have with an average replacement playing instead.
+
+```{r}
+#| warning: false
+#| output: false
+library(baseballr)
+library(tidyverse)
+batting_stats_2024 <- fg_bat_leaders(startseason = "2024", endseason = "2024", sortstat = "WAR") |> 
+  relocate(WAR) |>
+  filter(PA >= 100)
+batting_stats_2023 <- fg_bat_leaders(startseason = "2023", endseason = "2023", sortstat = "WAR") |> 
+  relocate(WAR) |>
+  filter(PA >= 100)
+batting_stats_2022 <- fg_bat_leaders(startseason = "2022", endseason = "2022", sortstat = "WAR") |> 
+  relocate(WAR) |>
+  filter(PA >= 100)
+batting_stats_2021 <- fg_bat_leaders(startseason = "2021", endseason = "2021", sortstat = "WAR") |> 
+  relocate(WAR) |>
+  filter(PA >= 100)
+
+batting_stats_df <- bind_rows(batting_stats_2021, batting_stats_2022, batting_stats_2023, batting_stats_2024) |>
+  arrange(desc(WAR)) |> select("WAR", "PlayerName", "Age", "G", "AB", 
+                               "PA", "H", "1B", "2B", "3B", "HR", "R", "RBI", 
+                               "BB", "IBB", "SO", "HBP", "SB", "CS", "AVG", "SF",
+                               "SH", "IFH", "BB_pct", "K_pct", "BB_K", "OBP", 
+                               "SLG", "OPS", "wRC", "Batting", "Defense",
+                               "Offense", "BaseRunning", "Clutch")
+batting_stats_df
+
+scale_vec <- c("Age", "G", "AB", "PA", "H", "1B", "2B", "3B", "HR", "R", "RBI", 
+               "BB", "IBB", "SO", "HBP", "SB", "CS", "AVG", "SF", "SH", "IFH", 
+               "BB_pct", "K_pct", "BB_K", "OBP", "SLG", "OPS", "wRC", "Batting", 
+               "Defense", "Offense", "BaseRunning", "Clutch")
+
+batting_stats_scaled <- batting_stats_df |> mutate(across(scale_vec, ~ (.x - min(.x)) / (max(.x) - min(.x))))
+
+set.seed(07012003)
+batting_train <- batting_stats_scaled |> slice_sample(n = 1200)
+batting_test <- anti_join(batting_stats_scaled, batting_train)
+```
+
+# Data Exploration
+
+```{r}
+#| warning: false
+ggplot(data = batting_stats_df, aes(x = AVG, y = WAR)) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  labs(title = "Comparison of WAR and Batting Average",
+         x = "Batting AVG") +
+  theme_minimal()
+```
+
+This graph shows a plot comparing WAR and Batting Average. Through this, we can see that there is some correlation between these two statistics. As Batting Average increases, WAR tends to increase as well.
+
+```{r}
+#| warning: false
+ggplot(data = batting_stats_df, aes(x = G, y = WAR)) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  labs(title = "Comparison of WAR and # of Games Played",
+         x = "Games Played") +
+  theme_minimal()
+```
+
+This graph shows a plot comparing WAR and the Number of Games Played in a season. Through this, we can see that there seems to be a correlation between these two statistics, however this may not tell us as much as it seems. For starters, WAR is a cumulative statistic, so if two players had identical stats, the one who had played more games would be the one with a higher WAR. On top of that, players with better WAR, are better players, and as such would play in more games than say, a player with a poor WAR.
+
+```{r}
+#| warning: false
+#| echo: false
+exploration_1 <- batting_stats_df |> mutate(WAR_Cat = case_when(
+  WAR >= 6 ~ "WAR Over 6",
+  WAR >= 4 & WAR < 6 ~ "WAR Between 4 & 6",
+  WAR >= 2 & WAR < 4 ~ "WAR Between 2 & 4",
+  WAR >= 0 & WAR < 2 ~ "WAR Between 0 & 2",
+  WAR < 0 ~ "WAR Below 0")) |>
+  relocate(WAR_Cat)
+exploration_1.1 <- exploration_1 |> group_by(WAR_Cat) |>
+  summarise(mean_AVG = mean(AVG),
+            mean_HR = mean(HR))
+```
+
+```{r}
+ggplot(data = exploration_1, aes(x = AVG, y = HR)) +
+  geom_point() +
+  geom_point(data = exploration_1.1, aes(x = mean_AVG, y = mean_HR), 
+             colour = "red", size = 3) +
+  facet_wrap(~ WAR_Cat) +
+  theme_minimal() +
+  labs(title = "Comparison of Batting AVG and Home Runs grouped by different WAR",
+       x = "Batting AVG",
+       y = "Home Runs")
+```
+
+This graph shows players with different WAR, grouped into 5 groups of WAR, and how their Batting Average compares to the amount of Home Runs that they hit. The red dot in each plot shows where the average player in each of these WAR categories lands in this comparison. From this we can see that as players get better (higher WAR), they tend to have both a higher batting average, and hit more home runs.
+
+```{r}
+#| warning: false
+#| echo: false
+exploration_1.2 <- exploration_1 |> group_by(WAR_Cat) |>
+  summarise(mean_O = mean(Offense),
+            mean_D = mean(Defense))
+```
+
+```{r}
+ggplot(data = exploration_1, aes(x = Offense, y = Defense)) +
+  geom_point() +
+  geom_point(data = exploration_1.2, aes(x = mean_O, y = mean_D),
+             colour = "red", size = 3) +
+  facet_wrap(~ WAR_Cat) +
+  theme_minimal() +
+  labs(title = "Comparison of Offense & Defense grouped by different WAR")
+```
+
+This graph also shows players with different WAR, grouped into 5 groups of WAR, and how their Defense and Offense compare. Throughout all 5 groups, we see that the players who are better at Defense are worse at Offense. This makes sense, because if they were good at both, they would likely have a higher WAR and would therefore be in a different one of the 5 categories. As we look at the groups with higher and higher WAR, we see that the players tend to get better at both Offense and Defense, with the only caveat being that the average defense seems to get worse from the group of players with WAR between 4 and 6 to the group of players with WAR greater than 6.
+
+```{r}
+#| warning: false
+library(GGally)
+ggpairs(data = batting_train, columns = c(11, 29, 30, 1))
+```
+
+This plot shows how each of the 3 of the columns in the dataset that I will use for the knn analysis correlate to the WAR stat. Each of the variables have a fairly strong correlation with WAR. As each of these stats increase, the players WAR does as well.
+
+# KNN Analysis
+
+A k-nearest-neighbors model takes a training set and using certain predictor variables gives them a spot on a graph that has however many dimensions that there are predictor variables. Then using a test set of data, for each row in the test set, it places that onto the graph, and then looks at the closest 'neighbors' to the row in the test set. The amount of neighbors that it looks at is determined by the k value. The model then determines what the neighbors WAR is, and predicts the row in the test set to have the WAR of the average of the neighbors. You need a training set and a test set with no overlapping data points because if the data were tested on the same data it was trained on, it would not give you an accurate sense of how good the predictors you chose are. To split the data, you take roughly 2/3 of the data (randomly chosen) and put it into the training set, and the rest goes into the test set. Another important thing is to scale the variables. If the two predictors were height (inches) and weight (lbs), the scale of height would likely be between 60-75 while the scale for weight could be anywhere between 90-300. This would give skewed results for the knn model as it uses distance to determine the nearest neighbors and with differing scales, one of the predictors would be weighted more heavily than the other.
+
+```{r}
+#| warning: false
+library(class)
+library(Metrics)
+train_cat <- batting_train$WAR
+test_cat <- batting_test$WAR
+
+
+batting_train_small <- batting_train |> select(G, H, HR, OPS, Offense, Defense, 
+                                               Batting, wRC)
+
+batting_test_small <- batting_test |> select(G, H, HR, OPS, Offense, Defense, 
+                                             Batting, wRC)
+
+
+get_mae <- function(k_val) {
+  knn_mod <- knn(train = batting_train_small, test = batting_test_small,
+               cl = train_cat, k = k_val)
+  
+  knn_mod_double <- knn_mod |> as.character() |> as.double()
+  
+  mae(test_cat, knn_mod_double)
+}
+
+k_vec <- 1:30
+mae_list <- map(k_vec, get_mae)
+mae_vec <- mae_list |> unlist()
+mae_df <- tibble(k_vec, mae_vec)
+mae_df |> filter(mae_vec == min(mae_vec))
+```
+
+For my knn model I used the following 8 predictors: G (# of Games Played), H (# of Hits), HR (# of Home Runs), OPS (On-Base Plus Slugging), Offense, Defense, Batting, and wRC (Weighted Runs Created). My model predicted WAR with a mean absolute error of 0.351. This error is roughly the difference between Juan Soto's age 25 season and Fransisco Lindor's age 30 season. A comparison between some of the more important and easily understandable statistics in each of their seasons is below:
+
+```{r}
+#| echo: false
+#| warning: false
+batting_stats_df |> filter((PlayerName == "Juan Soto" & Age == 25) |
+                             (PlayerName == "Francisco Lindor" & Age == 30)) |>
+  select(WAR, PlayerName, G, AVG, OBP, SLG, HR, RBI, Offense, Defense)
+```
+
+As you can see, while Francisco Lindor was no slouch offensively, Juan Soto was marginally better in every offensive statistic. With that being said however, Juan Soto was a significantly below average defender, while Francisco Lindor is one of the best defensive players in his position. All in all, these players had fairly comparable seasons, which goes to show that my knn model is one that is quite accurate.
+
+# Conclusion
+
